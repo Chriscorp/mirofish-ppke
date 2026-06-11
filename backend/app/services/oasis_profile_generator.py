@@ -16,10 +16,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from openai import OpenAI
-from zep_cloud.client import Zep
 
 from ..config import Config
+from ..utils.local_graph_store import LocalGraphStore
 from ..utils.logger import get_logger
+from ..utils.locale import get_language_instruction, get_locale, set_locale, t
 from .zep_entity_reader import EntityNode, ZepEntityReader
 
 logger = get_logger('mirofish.oasis_profile')
@@ -55,6 +56,13 @@ class OasisAgentProfile:
     source_entity_uuid: Optional[str] = None
     source_entity_type: Optional[str] = None
     
+    # Behavioral anchors (comportementaux)
+    posting_style: Optional[str] = None                 # terse | verbose | meme-heavy | data-driven | emotional
+    active_hours: Optional[List[int]] = None              # heures d'activité (0-23)
+    opinion_drift_rate: Optional[float] = None            # 0.0-1.0 (vitesse de changement d'avis)
+    influence_weight: Optional[float] = None              # 0.5-3.0 (poids social)
+    archetype: Optional[str] = None                       # leader | lurker | reactor | amplifier
+    
     created_at: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d"))
     
     def to_reddit_format(self) -> Dict[str, Any]:
@@ -82,6 +90,16 @@ class OasisAgentProfile:
             profile["profession"] = self.profession
         if self.interested_topics:
             profile["interested_topics"] = self.interested_topics
+        if self.posting_style:
+            profile["posting_style"] = self.posting_style
+        if self.active_hours:
+            profile["active_hours"] = self.active_hours
+        if self.opinion_drift_rate is not None:
+            profile["opinion_drift_rate"] = self.opinion_drift_rate
+        if self.influence_weight is not None:
+            profile["influence_weight"] = self.influence_weight
+        if self.archetype:
+            profile["archetype"] = self.archetype
         
         return profile
     
@@ -112,6 +130,16 @@ class OasisAgentProfile:
             profile["profession"] = self.profession
         if self.interested_topics:
             profile["interested_topics"] = self.interested_topics
+        if self.posting_style:
+            profile["posting_style"] = self.posting_style
+        if self.active_hours:
+            profile["active_hours"] = self.active_hours
+        if self.opinion_drift_rate is not None:
+            profile["opinion_drift_rate"] = self.opinion_drift_rate
+        if self.influence_weight is not None:
+            profile["influence_weight"] = self.influence_weight
+        if self.archetype:
+            profile["archetype"] = self.archetype
         
         return profile
     
@@ -136,6 +164,11 @@ class OasisAgentProfile:
             "source_entity_uuid": self.source_entity_uuid,
             "source_entity_type": self.source_entity_type,
             "created_at": self.created_at,
+            "posting_style": self.posting_style,
+            "active_hours": self.active_hours,
+            "opinion_drift_rate": self.opinion_drift_rate,
+            "influence_weight": self.influence_weight,
+            "archetype": self.archetype,
         }
 
 
@@ -178,35 +211,30 @@ class OasisProfileGenerator:
     ]
     
     def __init__(
-        self, 
+        self,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         model_name: Optional[str] = None,
-        zep_api_key: Optional[str] = None,
-        graph_id: Optional[str] = None
+        zep_api_key: Optional[str] = None,   # 已废弃，保留以兼容旧调用
+        graph_id: Optional[str] = None,
+        storage_dir: Optional[str] = None,
     ):
         self.api_key = api_key or Config.LLM_API_KEY
         self.base_url = base_url or Config.LLM_BASE_URL
         self.model_name = model_name or Config.LLM_MODEL_NAME
-        
+
         if not self.api_key:
             raise ValueError("LLM_API_KEY 未配置")
-        
+
         self.client = OpenAI(
             api_key=self.api_key,
             base_url=self.base_url
         )
-        
-        # Zep客户端用于检索丰富上下文
-        self.zep_api_key = zep_api_key or Config.ZEP_API_KEY
-        self.zep_client = None
+
+        # 本地图谱存储
+        storage_dir = storage_dir or Config.GRAPH_STORAGE_DIR
+        self.store = LocalGraphStore(storage_dir)
         self.graph_id = graph_id
-        
-        if self.zep_api_key:
-            try:
-                self.zep_client = Zep(api_key=self.zep_api_key)
-            except Exception as e:
-                logger.warning(f"Zep客户端初始化失败: {e}")
     
     def generate_profile_from_entity(
         self, 
@@ -268,6 +296,11 @@ class OasisProfileGenerator:
             country=profile_data.get("country"),
             profession=profile_data.get("profession"),
             interested_topics=profile_data.get("interested_topics", []),
+            posting_style=profile_data.get("posting_style"),
+            active_hours=profile_data.get("active_hours"),
+            opinion_drift_rate=profile_data.get("opinion_drift_rate"),
+            influence_weight=profile_data.get("influence_weight"),
+            archetype=profile_data.get("archetype"),
             source_entity_uuid=entity.uuid,
             source_entity_type=entity_type,
         )
@@ -284,130 +317,53 @@ class OasisProfileGenerator:
     
     def _search_zep_for_entity(self, entity: EntityNode) -> Dict[str, Any]:
         """
-        使用Zep图谱混合搜索功能获取实体相关的丰富信息
-        
-        Zep没有内置混合搜索接口，需要分别搜索edges和nodes然后合并结果。
-        使用并行请求同时搜索，提高效率。
-        
+        使用本地图谱关键词搜索获取实体相关的丰富信息
+
         Args:
             entity: 实体节点对象
-            
+
         Returns:
             包含facts, node_summaries, context的字典
         """
-        import concurrent.futures
-        
-        if not self.zep_client:
-            return {"facts": [], "node_summaries": [], "context": ""}
-        
-        entity_name = entity.name
-        
-        results = {
-            "facts": [],
-            "node_summaries": [],
-            "context": ""
-        }
-        
-        # 必须有graph_id才能进行搜索
+        results: Dict[str, Any] = {"facts": [], "node_summaries": [], "context": ""}
+
         if not self.graph_id:
-            logger.debug(f"跳过Zep检索：未设置graph_id")
+            logger.debug("跳过本地检索：未设置graph_id")
             return results
-        
-        comprehensive_query = f"关于{entity_name}的所有信息、活动、事件、关系和背景"
-        
-        def search_edges():
-            """搜索边（事实/关系）- 带重试机制"""
-            max_retries = 3
-            last_exception = None
-            delay = 2.0
-            
-            for attempt in range(max_retries):
-                try:
-                    return self.zep_client.graph.search(
-                        query=comprehensive_query,
-                        graph_id=self.graph_id,
-                        limit=30,
-                        scope="edges",
-                        reranker="rrf"
-                    )
-                except Exception as e:
-                    last_exception = e
-                    if attempt < max_retries - 1:
-                        logger.debug(f"Zep边搜索第 {attempt + 1} 次失败: {str(e)[:80]}, 重试中...")
-                        time.sleep(delay)
-                        delay *= 2
-                    else:
-                        logger.debug(f"Zep边搜索在 {max_retries} 次尝试后仍失败: {e}")
-            return None
-        
-        def search_nodes():
-            """搜索节点（实体摘要）- 带重试机制"""
-            max_retries = 3
-            last_exception = None
-            delay = 2.0
-            
-            for attempt in range(max_retries):
-                try:
-                    return self.zep_client.graph.search(
-                        query=comprehensive_query,
-                        graph_id=self.graph_id,
-                        limit=20,
-                        scope="nodes",
-                        reranker="rrf"
-                    )
-                except Exception as e:
-                    last_exception = e
-                    if attempt < max_retries - 1:
-                        logger.debug(f"Zep节点搜索第 {attempt + 1} 次失败: {str(e)[:80]}, 重试中...")
-                        time.sleep(delay)
-                        delay *= 2
-                    else:
-                        logger.debug(f"Zep节点搜索在 {max_retries} 次尝试后仍失败: {e}")
-            return None
-        
+
+        entity_name = entity.name
+        query = t('progress.zepSearchQuery', name=entity_name)
+
         try:
-            # 并行执行edges和nodes搜索
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                edge_future = executor.submit(search_edges)
-                node_future = executor.submit(search_nodes)
-                
-                # 获取结果
-                edge_result = edge_future.result(timeout=30)
-                node_result = node_future.result(timeout=30)
-            
-            # 处理边搜索结果
-            all_facts = set()
-            if edge_result and hasattr(edge_result, 'edges') and edge_result.edges:
-                for edge in edge_result.edges:
-                    if hasattr(edge, 'fact') and edge.fact:
-                        all_facts.add(edge.fact)
-            results["facts"] = list(all_facts)
-            
-            # 处理节点搜索结果
-            all_summaries = set()
-            if node_result and hasattr(node_result, 'nodes') and node_result.nodes:
-                for node in node_result.nodes:
-                    if hasattr(node, 'summary') and node.summary:
-                        all_summaries.add(node.summary)
-                    if hasattr(node, 'name') and node.name and node.name != entity_name:
-                        all_summaries.add(f"相关实体: {node.name}")
-            results["node_summaries"] = list(all_summaries)
-            
-            # 构建综合上下文
+            # 搜索边（事实）
+            edge_raw = self.store.search(self.graph_id, query, limit=30, scope="edges")
+            facts = list({e.get("fact", "") for e in edge_raw.get("edges", []) if e.get("fact")})
+            results["facts"] = facts
+
+            # 搜索节点（摘要）
+            node_raw = self.store.search(self.graph_id, query, limit=20, scope="nodes")
+            summaries = set()
+            for n in node_raw.get("nodes", []):
+                if n.get("summary"):
+                    summaries.add(n["summary"])
+                if n.get("name") and n["name"] != entity_name:
+                    summaries.add(f"相关实体: {n['name']}")
+            results["node_summaries"] = list(summaries)
+
+            # 构建上下文
             context_parts = []
             if results["facts"]:
                 context_parts.append("事实信息:\n" + "\n".join(f"- {f}" for f in results["facts"][:20]))
             if results["node_summaries"]:
                 context_parts.append("相关实体:\n" + "\n".join(f"- {s}" for s in results["node_summaries"][:10]))
             results["context"] = "\n\n".join(context_parts)
-            
-            logger.info(f"Zep混合检索完成: {entity_name}, 获取 {len(results['facts'])} 条事实, {len(results['node_summaries'])} 个相关节点")
-            
-        except concurrent.futures.TimeoutError:
-            logger.warning(f"Zep检索超时 ({entity_name})")
+
+            logger.info(f"本地检索完成: {entity_name}, 获取 {len(results['facts'])} 条事实, "
+                        f"{len(results['node_summaries'])} 个相关节点")
+
         except Exception as e:
-            logger.warning(f"Zep检索失败 ({entity_name}): {e}")
-        
+            logger.warning(f"本地检索失败 ({entity_name}): {e}")
+
         return results
     
     def _build_entity_context(self, entity: EntityNode) -> str:
@@ -670,8 +626,8 @@ class OasisProfileGenerator:
     
     def _get_system_prompt(self, is_individual: bool) -> str:
         """获取系统提示词"""
-        base_prompt = "你是社交媒体用户画像生成专家。生成详细、真实的人设用于舆论模拟,最大程度还原已有现实情况。必须返回有效的JSON格式，所有字符串值不能包含未转义的换行符。使用中文。"
-        return base_prompt
+        base_prompt = "你是社交媒体用户画像生成专家。生成详细、真实的人设用于舆论模拟,最大程度还原已有现实情况。必须返回有效的JSON格式，所有字符串值不能包含未转义的换行符。"
+        return f"{base_prompt}\n\n{get_language_instruction()}"
     
     def _build_individual_persona_prompt(
         self,
@@ -713,13 +669,19 @@ class OasisProfileGenerator:
 6. country: 国家（使用中文，如"中国"）
 7. profession: 职业
 8. interested_topics: 感兴趣话题数组
+9. posting_style: 发帖风格,必须是以下之一: "terse"(简洁) | "verbose"(详细) | "meme-heavy"(表情包多) | "data-driven"(数据驱动) | "emotional"(情绪化)
+10. active_hours: 活跃时间段数组,0-23的整数(至少4个),例如[8,9,10,14,15,20]
+11. opinion_drift_rate: 观点漂移率,0.0-1.0的浮点数。0.0=绝不改变立场,1.0=容易被说服
+12. influence_weight: 社会影响力权重,0.5-3.0的浮点数。>2.0=意见领袖,<0.8=跟随者
+13. archetype: 社交角色类型,必须是以下之一: "leader"(意见领袖) | "lurker"(潜水者) | "reactor"(反应者) | "amplifier"(放大器)
 
 重要:
 - 所有字段值必须是字符串或数字，不要使用换行符
 - persona必须是一段连贯的文字描述
-- 使用中文（除了gender字段必须用英文male/female）
+- {get_language_instruction()} (gender字段必须用英文male/female)
 - 内容要与实体信息保持一致
 - age必须是有效的整数，gender必须是"male"或"female"
+- **要确保生成的Agent类型多样化**: 意见领袖(influence_weight>2.0, opinion_drift_rate<0.3)、潜水者(low posting, observer)、反应者(high drift, emotional)、放大器(repost-heavy, high activity)都应该存在
 """
 
     def _build_group_persona_prompt(
@@ -762,11 +724,16 @@ class OasisProfileGenerator:
 6. country: 国家（使用中文，如"中国"）
 7. profession: 机构职能描述
 8. interested_topics: 关注领域数组
+9. posting_style: 发帖风格,必须是以下之一: "terse" | "verbose" | "data-driven" | "emotional"
+10. active_hours: 活跃时间段数组,0-23的整数(至少4个)
+11. opinion_drift_rate: 观点漂移率,0.0-1.0。机构通常较低(<0.3)
+12. influence_weight: 社会影响力权重,0.5-3.0。机构通常较高(>1.5)
+13. archetype: 社交角色类型,通常是"leader"或"amplifier"
 
 重要:
 - 所有字段值必须是字符串或数字，不允许null值
 - persona必须是一段连贯的文字描述，不要使用换行符
-- 使用中文（除了gender字段必须用英文"other"）
+- {get_language_instruction()} (gender字段必须用英文"other")
 - age必须是整数30，gender必须是字符串"other"
 - 机构账号发言要符合其身份定位"""
     
@@ -915,8 +882,12 @@ class OasisProfileGenerator:
                 except Exception as e:
                     logger.warning(f"实时保存 profiles 失败: {e}")
         
+        # Capture locale before spawning thread pool workers
+        current_locale = get_locale()
+
         def generate_single_profile(idx: int, entity: EntityNode) -> tuple:
             """生成单个profile的工作函数"""
+            set_locale(current_locale)
             entity_type = entity.get_entity_type() or "Entity"
             
             try:
@@ -1017,7 +988,7 @@ class OasisProfileGenerator:
         
         output_lines = [
             f"\n{separator}",
-            f"[已生成] {entity_name} ({entity_type})",
+            t('progress.profileGenerated', name=entity_name, type=entity_type),
             f"{separator}",
             f"用户名: {profile.user_name}",
             f"",

@@ -21,6 +21,8 @@ from enum import Enum
 from ..config import Config
 from ..utils.llm_client import LLMClient
 from ..utils.logger import get_logger
+from ..utils.local_graph_store import LocalGraphStore
+from .brain_in_the_fish import BrainInTheFish
 from .zep_tools import (
     ZepToolsService, 
     SearchResult, 
@@ -473,72 +475,72 @@ class Report:
 # ── 工具描述 ──
 
 TOOL_DESC_INSIGHT_FORGE = """\
-【深度洞察检索 - 强大的检索工具】
-这是我们强大的检索函数，专为深度分析设计。它会：
-1. 自动将你的问题分解为多个子问题
-2. 从多个维度检索模拟图谱中的信息
-3. 整合语义搜索、实体分析、关系链追踪的结果
-4. 返回最全面、最深度的检索内容
+[Insight Forge - Recherche approfondie]
+Notre outil le plus puissant pour l analyse approfondie :
+1. Decompose votre question en sous-questions
+2. Explore le graphe sous plusieurs dimensions
+3. Integre recherche, analyse d entites et tracing de relations
+4. Retourne le contenu le plus complet et profond
 
-【使用场景】
-- 需要深入分析某个话题
-- 需要了解事件的多个方面
-- 需要获取支撑报告章节的丰富素材
+[Usage]
+- Analyser un sujet en profondeur
+- Comprendre les multiples aspects d un evenement
+- Obtenir du contenu riche pour les chapitres
 
-【返回内容】
-- 相关事实原文（可直接引用）
-- 核心实体洞察
-- 关系链分析"""
+[Resultats]
+- Faits pertinents (citables directement)
+- Analyses d entites cles
+- Analyse des chaines de relations"""
 
 TOOL_DESC_PANORAMA_SEARCH = """\
-【广度搜索 - 获取全貌视图】
-这个工具用于获取模拟结果的完整全貌，特别适合了解事件演变过程。它会：
-1. 获取所有相关节点和关系
-2. 区分当前有效的事实和历史/过期的事实
-3. 帮助你了解舆情是如何演变的
+[Panorama Search - Vue d ensemble]
+Outil pour obtenir une vue complete de l evolution des evenements :
+1. Recupere tous les noeuds et relations pertinents
+2. Distingue faits actuels et historiques/expires
+3. Aide a comprendre comment l opinion a evolue
 
-【使用场景】
-- 需要了解事件的完整发展脉络
-- 需要对比不同阶段的舆情变化
-- 需要获取全面的实体和关系信息
+[Usage]
+- Comprendre le developpement complet d un evenement
+- Comparer les changements d opinion a不同 etapes
+- Obtenir des infos completes sur entites et relations
 
-【返回内容】
-- 当前有效事实（模拟最新结果）
-- 历史/过期事实（演变记录）
-- 所有涉及的实体"""
+[Resultats]
+- Faits actuels (resultats les plus recents)
+- Faits historiques/expires (trace de l evolution)
+- Toutes les entites concernees"""
 
 TOOL_DESC_QUICK_SEARCH = """\
-【简单搜索 - 快速检索】
-轻量级的快速检索工具，适合简单、直接的信息查询。
+[Quick Search - Recherche rapide]
+Outil de recherche leger, ideal pour les requetes simples et directes.
 
-【使用场景】
-- 需要快速查找某个具体信息
-- 需要验证某个事实
-- 简单的信息检索
+[Usage]
+- Rechercher rapidement une information specifique
+- Verifier un fait
+- Recherche d information simple
 
-【返回内容】
-- 与查询最相关的事实列表"""
+[Resultats]
+- Liste des faits les plus pertinents"""
 
 TOOL_DESC_INTERVIEW_AGENTS = """\
-【深度采访 - 真实Agent采访（双平台）】
-调用OASIS模拟环境的采访API，对正在运行的模拟Agent进行真实采访！
-这不是LLM模拟，而是调用真实的采访接口获取模拟Agent的原始回答。
-默认在Twitter和Reddit两个平台同时采访，获取更全面的观点。
+[Interview Agents - Entretien avec les Agents]
+Interrogez les Agents via l API OASIS de la simulation en cours !
+Ce nest pas une simulation LLM mais un veritable entretien avec les agents.
+Par defaut, menes simultanement sur Twitter et Reddit.
 
-功能流程：
-1. 自动读取人设文件，了解所有模拟Agent
-2. 智能选择与采访主题最相关的Agent（如学生、媒体、官方等）
-3. 自动生成采访问题
-4. 调用 /api/simulation/interview/batch 接口在双平台进行真实采访
-5. 整合所有采访结果，提供多视角分析
+Fonctionnement :
+1. Lecture automatique des profils de tous les Agents
+2. Selection intelligente des agents les plus pertinents
+3. Generation automatique des questions
+4. Appel API /api/simulation/interview/batch
+5. Integration des resultats pour analyse multi-points de vue
 
-【使用场景】
-- 需要从不同角色视角了解事件看法（学生怎么看？媒体怎么看？官方怎么说？）
-- 需要收集多方意见和立场
-- 需要获取模拟Agent的真实回答（来自OASIS模拟环境）
-- 想让报告更生动，包含"采访实录"
+[Usage]
+- Comprendre les perspectives de differents roles
+- Collecter opinions et positions multiples
+- Obtenir des reponses reelles des Agents
+- Enrichir le rapport avec des extraits d entretiens
 
-【返回内容】
+[Resultats]
 - 被采访Agent的身份信息
 - 各Agent在Twitter和Reddit两个平台的采访回答
 - 关键引言（可直接引用）
@@ -549,29 +551,29 @@ TOOL_DESC_INTERVIEW_AGENTS = """\
 # ── 大纲规划 prompt ──
 
 PLAN_SYSTEM_PROMPT = """\
-你是一个「未来预测报告」的撰写专家，拥有对模拟世界的「上帝视角」——你可以洞察模拟中每一位Agent的行为、言论和互动。
+Vous êtes un expert en rédaction de "Rapport de Prédiction Prospective", doté d'une "vue divine" du monde simulé — vous pouvez observer les actions, discours et interactions de chaque Agent dans la simulation.
 
-【核心理念】
-我们构建了一个模拟世界，并向其中注入了特定的「模拟需求」作为变量。模拟世界的演化结果，就是对未来可能发生情况的预测。你正在观察的不是"实验数据"，而是"未来的预演"。
+【Concept Clé】
+Nous avons construit un monde simulé et y avons injecté des "besoins de simulation" spécifiques comme variables. Le résultat de l'évolution du monde simulé est une prédiction de ce qui pourrait arriver dans le futur. Vous n'observez pas des "données expérimentales", mais une "répétition du futur".
 
-【你的任务】
-撰写一份「未来预测报告」，回答：
-1. 在我们设定的条件下，未来发生了什么？
-2. 各类Agent（人群）是如何反应和行动？
-3. 这个模拟揭示了哪些值得关注的未来趋势和风险？
+【Votre Mission】
+Rédigez un "Rapport de Prédiction Prospective" répondant à :
+1. Dans les conditions que nous avons définies, que s'est-il passé dans le futur ?
+2. Comment les différents Agents (populations) ont-ils réagi et agi ?
+3. Quelles tendances et risques futurs notables cette simulation a-t-elle révélés ?
 
-【报告定位】
-- ✅ 这是一份基于模拟的未来预测报告，揭示"如果这样，未来会怎样"
-- ✅ 聚焦于预测结果：事件走向、群体反应、涌现现象、潜在风险
-- ✅ 模拟世界中的Agent言行就是对未来人群行为的预测
-- ❌ 不是对现实世界现状的分析
-- ❌ 不是泛泛而谈的舆情综述
+【Positionnement du Rapport】
+- ✅ Ceci est un rapport de prédiction basé sur la simulation, révélant "si cela se produit, à quoi ressemblera le futur"
+- ✅ Focalisé sur les résultats de prédiction : évolution des événements, réactions des groupes, phénomènes émergents, risques potentiels
+- ✅ Les actions et paroles des Agents dans le monde simulé sont des prédictions des comportements futurs
+- ❌ Pas une analyse de la situation actuelle du monde réel
+- ❌ Pas une revue d'opinion générale
 
-【章节数量限制】
-- 最少2个章节，最多5个章节
-- 不需要子章节，每个章节直接撰写完整内容
-- 内容要精炼，聚焦于核心预测发现
-- 章节结构由你根据预测结果自主设计
+【Limite du Nombre de Chapitres】
+- Minimum 2 chapitres, maximum 5 chapitres
+- Pas de sous-chapitres, chaque chapitre rédige directement son contenu complet
+- Le contenu doit être concis, centré sur les découvertes prédictives clés
+- La structure des chapitres est conçue par vous en fonction des résultats de prédiction
 
 请输出JSON格式的报告大纲，格式如下：
 {
@@ -588,49 +590,49 @@ PLAN_SYSTEM_PROMPT = """\
 注意：sections数组最少2个，最多5个元素！"""
 
 PLAN_USER_PROMPT_TEMPLATE = """\
-【预测场景设定】
-我们向模拟世界注入的变量（模拟需求）：{simulation_requirement}
+【Configuration du Scénario de Prédiction】
+Variables injectées dans le monde simulé (besoins de simulation) :{simulation_requirement}
 
-【模拟世界规模】
-- 参与模拟的实体数量: {total_nodes}
-- 实体间产生的关系数量: {total_edges}
-- 实体类型分布: {entity_types}
-- 活跃Agent数量: {total_entities}
+【Taille du Monde Simulé】
+- Nombre d'entités participant à la simulation : {total_nodes}
+- Nombre de relations entre entités : {total_edges}
+- Distribution des types d'entités : {entity_types}
+- Nombre d'Agents actifs : {total_entities}
 
-【模拟预测到的部分未来事实样本】
+【Échantillons de Faits Futurs Prédits par la Simulation】
 {related_facts_json}
 
-请以「上帝视角」审视这个未来预演：
-1. 在我们设定的条件下，未来呈现出了什么样的状态？
-2. 各类人群（Agent）是如何反应和行动的？
-3. 这个模拟揭示了哪些值得关注的未来趋势？
+Veuillez examiner cette répétition du futur avec une "vue divine" :
+1. Dans les conditions définies, quel état le futur présente-t-il ?
+2. Comment les différentes populations (Agents) ont-elles réagi et agi ?
+3. Quelles tendances futures notables cette simulation a-t-elle révélées ?
 
-根据预测结果，设计最合适的报告章节结构。
+Concevez la structure de chapitres la plus appropriée en fonction des résultats de prédiction.
 
-【再次提醒】报告章节数量：最少2个，最多5个，内容要精炼聚焦于核心预测发现。"""
+【Rappel】Nombre de chapitres : minimum 2, maximum 5. Le contenu doit être concis et centré sur les découvertes prédictives clés."""
 
 # ── 章节生成 prompt ──
 
 SECTION_SYSTEM_PROMPT_TEMPLATE = """\
-你是一个「未来预测报告」的撰写专家，正在撰写报告的一个章节。
+Vous êtes un expert en rédaction de "Rapport de Prédiction Prospective", en train de rédiger un chapitre du rapport.
 
-报告标题: {report_title}
-报告摘要: {report_summary}
-预测场景（模拟需求）: {simulation_requirement}
+Titre du rapport : {report_title}
+Résumé du rapport : {report_summary}
+Scénario de prédiction (besoin de simulation) : {simulation_requirement}
 
 当前要撰写的章节: {section_title}
 
 ═══════════════════════════════════════════════════════════════
-【核心理念】
+【Concept Clé】
 ═══════════════════════════════════════════════════════════════
 
 模拟世界是对未来的预演。我们向模拟世界注入了特定条件（模拟需求），
 模拟中Agent的行为和互动，就是对未来人群行为的预测。
 
-你的任务是：
-- 揭示在设定条件下，未来发生了什么
-- 预测各类人群（Agent）是如何反应和行动的
-- 发现值得关注的未来趋势、风险和机会
+Votre mission est :
+- Révéler ce qui se passe dans le futur dans les conditions définies
+- Prédire comment les différentes populations (Agents) réagissent et agissent
+- Identifier les tendances, risques et opportunités futurs notables
 
 ❌ 不要写成对现实世界现状的分析
 ✅ 要聚焦于"未来会怎样"——模拟结果就是预测的未来
@@ -639,10 +641,10 @@ SECTION_SYSTEM_PROMPT_TEMPLATE = """\
 【最重要的规则 - 必须遵守】
 ═══════════════════════════════════════════════════════════════
 
-1. 【必须调用工具观察模拟世界】
-   - 你正在以「上帝视角」观察未来的预演
-   - 所有内容必须来自模拟世界中发生的事件和Agent言行
-   - 禁止使用你自己的知识来编写报告内容
+1. 【Vous DEVEZ utiliser les outils pour observer le monde simulé】
+   - Vous observez la répétition du futur avec une "vue divine"
+   - Tout le contenu doit provenir des événements et des actions/paroles des Agents dans le monde simulé
+   - Il est interdit d'utiliser vos propres connaissances pour rédiger le contenu du rapport
    - 每个章节至少调用3次工具（最多5次）来观察模拟的世界，它代表了未来
 
 2. 【必须引用Agent的原始言行】
@@ -653,8 +655,8 @@ SECTION_SYSTEM_PROMPT_TEMPLATE = """\
 
 3. 【语言一致性 - 引用内容必须翻译为报告语言】
    - 工具返回的内容可能包含英文或中英文混杂的表述
-   - 如果模拟需求和材料原文是中文的，报告必须全部使用中文撰写
-   - 当你引用工具返回的英文或中英混杂内容时，必须将其翻译为流畅的中文后再写入报告
+   - Si les besoins de simulation et les matériaux sont en français, le rapport doit être rédigé entièrement en français
+   - Lorsque vous citez du contenu retourné par les outils en anglais, vous devez le traduire en français couramment avant de l'inclure dans le rapport
    - 翻译时保持原意不变，确保表述自然通顺
    - 这一规则同时适用于正文和引用块（> 格式）中的内容
 
@@ -826,7 +828,7 @@ REACT_FORCE_FINAL_MSG = "已达到工具调用限制，请直接输出 Final Ans
 # ── Chat prompt ──
 
 CHAT_SYSTEM_PROMPT_TEMPLATE = """\
-你是一个简洁高效的模拟预测助手。
+Vous êtes un assistant de prédiction de simulation simple et efficace.
 
 【背景】
 预测条件: {simulation_requirement}
@@ -1062,6 +1064,36 @@ class ReportAgent:
     
     # 合法的工具名称集合，用于裸 JSON 兜底解析时校验
     VALID_TOOL_NAMES = {"insight_forge", "panorama_search", "quick_search", "interview_agents"}
+
+    def _sanitize_section_content(self, content: str, section_title: str = "") -> str:
+        """
+        Sanitize LLM output that would be written as section content.
+        If the content is only an unexecuted tool_call, replace with fallback hint.
+        """
+        if not content:
+            return content
+        cleaned = re.sub(r'<tool_call>.*?</tool_call>', '', content, flags=re.DOTALL)
+        cleaned = re.sub(r'\[TOOL_CALL\].*?\)', '', cleaned)
+        cleaned = cleaned.strip()
+        if not cleaned:
+            return f"_(No content available for: {section_title})_" if section_title else "_(No content)_"
+        try:
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, dict):
+                tool_name = parsed.get("name") or parsed.get("tool")
+                if tool_name and tool_name in self.VALID_TOOL_NAMES:
+                    logger.warning(
+                        "Section '%s' content is raw tool_call (tool=%s) — replaced with fallback",
+                        section_title, tool_name
+                    )
+                    return (
+                        f"_(Note: The tool `{tool_name}` could not be executed "
+                        f"within iteration limits for this section. "
+                        f"Please regenerate the report or check model configuration.)_"
+                    )
+        except (json.JSONDecodeError, TypeError):
+            pass
+        return cleaned
 
     def _parse_tool_calls(self, response: str) -> List[Dict[str, Any]]:
         """
@@ -1390,6 +1422,7 @@ class ReportAgent:
 
                 # 正常结束
                 final_answer = response.split("Final Answer:")[-1].strip()
+                final_answer = self._sanitize_section_content(final_answer, section.title)
                 logger.info(f"章节 {section.title} 生成完成（工具调用: {tool_calls_count}次）")
 
                 if self.report_logger:
@@ -1488,7 +1521,7 @@ class ReportAgent:
             # 工具调用已足够，LLM 输出了内容但没带 "Final Answer:" 前缀
             # 直接将这段内容作为最终答案，不再空转
             logger.info(f"章节 {section.title} 未检测到 'Final Answer:' 前缀，直接采纳LLM输出作为最终内容（工具调用: {tool_calls_count}次）")
-            final_answer = response.strip()
+            final_answer = self._sanitize_section_content(response.strip(), section.title)
 
             if self.report_logger:
                 self.report_logger.log_section_content(
@@ -1705,6 +1738,29 @@ class ReportAgent:
             
             # 使用ReportManager组装完整报告
             report.markdown_content = ReportManager.assemble_full_report(report_id, outline)
+            
+            # ── Brain in the Fish : Audit Trail ──
+            try:
+                logger.info("Brain-in-the-Fish : analyse de cohérence en cours...")
+                graph_store = LocalGraphStore(Config.GRAPH_STORAGE_DIR)
+                brain = BrainInTheFish(
+                    llm_client=self.llm,
+                    graph_store=graph_store,
+                    storage_dir=Config.GRAPH_STORAGE_DIR,
+                )
+                audit = brain.analyze_report(
+                    report_text=report.markdown_content,
+                    graph_id=self.graph_id,
+                    simulation_id=self.simulation_id,
+                )
+                audit_md = audit.to_markdown()
+                # Append audit trail to the report
+                report.markdown_content += "\n\n---\n\n" + audit_md
+                logger.info(f"Brain-in-the-Fish terminé : score {audit.global_score:.0%}")
+            except Exception as e:
+                logger.warning(f"Brain-in-the-Fish ignoré (échec) : {e}")
+                # Ne pas bloquer le rapport si BrainInTheFish échoue
+            
             report.status = ReportStatus.COMPLETED
             report.completed_at = datetime.now().isoformat()
             
